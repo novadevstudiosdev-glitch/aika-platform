@@ -1,0 +1,245 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── ENUMS ───────────────────────────────────────────
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum TransportMode {
+  ROAD
+  RIVER
+  RAIL
+  MARITIME
+}
+
+enum ProjectPhase {
+  PRE_FEASIBILITY
+  FEASIBILITY
+  DESIGN
+  CONSTRUCTION
+  OPERATION
+}
+
+enum PermitStatus {
+  IN_PROGRESS
+  GRANTED
+  RENEWED
+  REJECTED
+  CANCELLED
+}
+
+enum MinorChangeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  IN_PROGRESS
+}
+
+enum EvaluationStatus {
+  DRAFT
+  COMPLETED
+}
+
+enum ComplianceLevel {
+  BASIC
+  GOOD
+  VERY_GOOD
+  EXCELLENT
+  EXCEPTIONAL
+}
+
+// ─── AUTH ────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  password      String?
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  projects Project[]
+  accounts Account[]
+  sessions Session[]
+}
+
+// Tablas compatibles con el adaptador de Prisma para Auth.js.
+// Para el MVP se utilizará Credentials + sesiones JWT.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ─── PROYECTOS ───────────────────────────────────────
+
+model Project {
+  id            String        @id @default(cuid())
+  name          String
+  code          String?
+  description   String?
+  transportMode TransportMode
+  phase         ProjectPhase
+  status        ProjectStatus @default(ACTIVE)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  permits        Permit[]
+  minorChanges   MinorChange[]
+  aikaEvaluation AikaEvaluation?
+
+  @@index([userId])
+  @@index([status])
+}
+
+// ─── PERMISOS AMBIENTALES ────────────────────────────
+
+model Permit {
+  id           String       @id @default(cuid())
+  projectId    String
+  name         String
+  authority    String
+  type         String
+  resolution   String?
+  issueDate    DateTime?
+  expiryDate   DateTime?
+  status       PermitStatus @default(IN_PROGRESS)
+  requirements String?      @db.Text
+  notes        String?      @db.Text
+  alertSent30  Boolean      @default(false)
+  alertSent7   Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  documents Document[]
+
+  @@index([projectId])
+  @@index([status])
+  @@index([expiryDate])
+}
+
+// `status` representa únicamente el estado administrativo.
+// La vigencia temporal se calculará en la aplicación a partir de `expiryDate`:
+// NO_EXPIRY_DATE, ACTIVE, EXPIRES_SOON o EXPIRED.
+
+// ─── CAMBIOS MENORES ─────────────────────────────────
+
+model MinorChange {
+  id           String            @id @default(cuid())
+  projectId    String
+  title        String
+  description  String            @db.Text
+  requestDate  DateTime
+  status       MinorChangeStatus @default(PENDING)
+  authorityRef String?
+  resolvedDate DateTime?
+  notes        String?           @db.Text
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  documents Document[]
+
+  @@index([projectId])
+  @@index([status])
+}
+
+// ─── EVALUACIÓN AIKA ─────────────────────────────────
+
+model AikaEvaluation {
+  id                  String           @id @default(cuid())
+  projectId           String           @unique
+  phase               ProjectPhase
+  status              EvaluationStatus @default(DRAFT)
+  finalScore          Float?
+  sustainabilityGrade Int?
+  completedAt         DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  project   Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  responses CriterionResponse[]
+}
+
+model CriterionResponse {
+  id              String           @id @default(cuid())
+  evaluationId    String
+  criterionCode   String
+  dimension       String
+  component       String
+  criterionName   String
+  complianceLevel ComplianceLevel?
+  scoreObtained   Float?
+  scoreMax        Float?
+  justification   String?          @db.Text
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  evaluation AikaEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@index([evaluationId])
+  @@index([criterionCode])
+}
+
+// ─── DOCUMENTOS DE SOPORTE ───────────────────────────
+
+// La aplicación validará con Zod que cada documento pertenezca
+// exactamente a un permiso o a un cambio menor, pero no a ambos.
+model Document {
+  id        String   @id @default(cuid())
+  name      String
+  url       String
+  type      String
+  createdAt DateTime @default(now())
+
+  permitId String?
+  permit   Permit? @relation(fields: [permitId], references: [id], onDelete: Cascade)
+
+  minorChangeId String?
+  minorChange   MinorChange? @relation(fields: [minorChangeId], references: [id], onDelete: Cascade)
+
+  @@index([permitId])
+  @@index([minorChangeId])
+}
